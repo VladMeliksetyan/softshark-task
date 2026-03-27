@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Serverless build artifacts
+.serverless/
+
+# Local environment files
+.env
+.env.*
+
+# Logs
+*.log
+

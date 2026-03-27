@@ -1,0 +1,189 @@
+service: softshark-task
+
+frameworkVersion: "4"
+
+custom:
+  uploadBucketName: upload-bucket-vladimir
+  uploadsTableName: UploadsTable
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: us-east-1
+  environment:
+    UPLOAD_BUCKET: ${self:custom.uploadBucketName}
+    UPLOADS_TABLE: ${self:custom.uploadsTableName}
+
+functions:
+  createUpload:
+    handler: handlers/createUpload.handler
+    role: !GetAtt CreateUploadRole.Arn
+    events:
+      - httpApi:
+          path: /uploads
+          method: post
+
+  getUploadStatus:
+    handler: handlers/getUploadStatus.handler
+    role: !GetAtt GetUploadStatusRole.Arn
+    events:
+      - httpApi:
+          path: /uploads/{uploadId}
+          method: get
+
+  processUpload:
+    handler: handlers/processUpload.handler
+    role: !GetAtt ProcessUploadRole.Arn
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - UploadQueue
+              - Arn
+
+resources:
+  Resources:
+    UploadBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.uploadBucketName}
+        NotificationConfiguration:
+          QueueConfigurations:
+            - Event: s3:ObjectCreated:*
+              Queue: !GetAtt UploadQueue.Arn
+              Filter:
+                S3Key:
+                  Rules:
+                    - Name: prefix
+                      Value: uploads/
+
+    UploadQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: upload-queue
+
+    UploadQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref UploadQueue
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: AllowS3SendMessage
+              Effect: Allow
+              Principal:
+                Service: s3.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt UploadQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: arn:aws:s3:::${self:custom.uploadBucketName}
+
+    UploadsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.uploadsTableName}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: uploadId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: uploadId
+            KeyType: HASH
+
+    CreateUploadRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: softshark-create-upload-role
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: create-upload-policy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: "*"
+                - Effect: Allow
+                  Action:
+                    - dynamodb:PutItem
+                  Resource: !GetAtt UploadsTable.Arn
+                - Effect: Allow
+                  Action:
+                    - s3:PutObject
+                  Resource: arn:aws:s3:::${self:custom.uploadBucketName}/uploads/*
+
+    GetUploadStatusRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: softshark-get-upload-status-role
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: get-upload-status-policy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: "*"
+                - Effect: Allow
+                  Action:
+                    - dynamodb:GetItem
+                  Resource: !GetAtt UploadsTable.Arn
+
+    ProcessUploadRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: softshark-process-upload-role
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: process-upload-policy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: "*"
+                - Effect: Allow
+                  Action:
+                    - sqs:ReceiveMessage
+                    - sqs:DeleteMessage
+                    - sqs:GetQueueAttributes
+                    - sqs:ChangeMessageVisibility
+                  Resource: !GetAtt UploadQueue.Arn
+                - Effect: Allow
+                  Action:
+                    - s3:GetObject
+                  Resource: arn:aws:s3:::${self:custom.uploadBucketName}/uploads/*
+                - Effect: Allow
+                  Action:
+                    - dynamodb:UpdateItem
+                  Resource: !GetAtt UploadsTable.Arn
